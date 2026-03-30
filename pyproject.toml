@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "polarengine-vllm"
+version = "0.1.0"
+description = "PolarEngine quantization plugin for vLLM"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.9"
+dependencies = [
+    "vllm>=0.8.0",
+    "triton>=2.0",
+]
+
+[project.entry-points."vllm.general_plugins"]
+polarengine = "polarengine_vllm:register_polar_quant"
+
+[tool.setuptools.packages.find]
+include = ["polarengine_vllm*"]
