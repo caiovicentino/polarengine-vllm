@@ -18,9 +18,15 @@ setup(
     packages=find_packages(),
     python_requires=">=3.9",
     install_requires=[
-        "vllm>=0.8.0",
-        "triton>=2.0",
+        "torch>=2.0",
+        "safetensors",
+        "scipy",
     ],
+    extras_require={
+        "vllm": ["vllm>=0.8.0"],
+        "triton": ["triton>=2.0"],
+        "cuda": ["triton>=2.0"],
+    },
     entry_points={
         "vllm.general_plugins": [
             "polarengine = polarengine_vllm:register_polar_quant",
