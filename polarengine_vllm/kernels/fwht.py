@@ -22,17 +22,17 @@ import torch
 # Hadamard matrix builder (cached, normalized)
 # =====================================================================
 
-_hadamard_cache: dict[int, torch.Tensor] = {}
+_hadamard_cache: dict[tuple, torch.Tensor] = {}
 
 
 def build_hadamard(n: int, device: torch.device = None) -> torch.Tensor:
     """Build normalized Walsh-Hadamard matrix of size n (power of 2).
 
     H @ H = I (self-inverse, orthogonal).
-    Cached globally -- 64 KB for n=128, fits in GPU L2.
+    Cached globally per (size, device) -- 64 KB for n=128, fits in GPU L2.
 
-    The matrix is cached in CPU memory by size. When a device is
-    requested, a copy is moved there (the CPU cache is never evicted).
+    The matrix is cached on the requested device so repeated calls
+    with the same (n, device) are free (no CPU->GPU copy).
 
     Args:
         n: Matrix dimension, must be a power of 2.
@@ -43,21 +43,31 @@ def build_hadamard(n: int, device: torch.device = None) -> torch.Tensor:
     """
     assert n >= 1 and (n & (n - 1)) == 0, f"n must be a power of 2, got {n}"
 
-    if n not in _hadamard_cache:
-        if n == 1:
-            H = torch.tensor([[1.0]])
-        else:
-            h = build_hadamard(n // 2)  # recursive, hits cache on the way up
-            H = torch.cat([
-                torch.cat([h, h], dim=1),
-                torch.cat([h, -h], dim=1),
-            ], dim=0) / math.sqrt(2)
-        _hadamard_cache[n] = H
+    # Normalize device for cache key
+    dev_key = str(device) if device is not None else "cpu"
+    cache_key = (n, dev_key)
 
-    H = _hadamard_cache[n]
-    if device is not None:
-        H = H.to(device)
-    return H
+    if cache_key not in _hadamard_cache:
+        # Build on CPU first (recursive)
+        cpu_key = (n, "cpu")
+        if cpu_key not in _hadamard_cache:
+            if n == 1:
+                H = torch.tensor([[1.0]])
+            else:
+                h = build_hadamard(n // 2)  # recursive, hits cache
+                H = torch.cat([
+                    torch.cat([h, h], dim=1),
+                    torch.cat([h, -h], dim=1),
+                ], dim=0) / math.sqrt(2)
+            _hadamard_cache[cpu_key] = H
+
+        # Move to target device and cache there
+        if device is not None:
+            _hadamard_cache[cache_key] = _hadamard_cache[cpu_key].to(device)
+        else:
+            return _hadamard_cache[cpu_key]
+
+    return _hadamard_cache[cache_key]
 
 
 # =====================================================================
