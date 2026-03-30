@@ -128,10 +128,16 @@ _SKIP_PATTERNS = (
     "norm",
     "layernorm",
     "rmsnorm",
-    "A_log",
-    ".D",
+    "a_log",
     "dt_bias",
     "conv1d",
+)
+
+# Checked CASE-SENSITIVE (not lowered) because ".D" lowered to ".d"
+# would falsely match "down_proj", "decoder", etc.
+_SKIP_PATTERNS_CASE_SENSITIVE = (
+    ".D",       # Mamba D buffer (model.layers.X.mamba.D)
+    "A_log",    # Mamba A_log (already in lowercase patterns too)
 )
 
 
@@ -170,6 +176,10 @@ def get_bits_for_layer(
 
     name_lower = name.lower()
     if any(k in name_lower for k in _SKIP_PATTERNS):
+        return 16
+
+    # Case-sensitive checks (e.g. ".D" must not match "down_proj")
+    if any(k in name for k in _SKIP_PATTERNS_CASE_SENSITIVE):
         return 16
 
     if "bias" in name and param.ndim == 1:
