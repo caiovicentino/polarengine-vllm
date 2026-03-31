@@ -1,23 +1,43 @@
 # PolarEngine for vLLM
 
-Custom quantization plugin for vLLM using PolarQuant -- optimal Gaussian quantization with Walsh-Hadamard rotation.
+Custom quantization plugin for vLLM using PolarQuant -- optimal Gaussian quantization via Walsh-Hadamard rotation + Lloyd-Max centroids.
 
-## Results
+**arXiv preprint**: [arXiv:2603.7424577](https://arxiv.org/abs/2603.7424577)
 
-| Method | tok/s | VRAM | PPL (WikiText-2) |
-|--------|-------|------|------------------|
-| FP16 baseline | 45.7 | 17.9 GB | 6.37 |
-| torchao INT4 | 43.3 | 6.3 GB | 6.68 |
-| BnB NF4 | 34.6 | 7.7 GB | ~6.7 |
-| **PolarEngine v4** | **34.2** | **7.9 GB** | **6.89** |
+> **Recommended path**: For best quality-per-VRAM, use **PolarQuant Q5 + torchao INT4** (43.1 tok/s, 6.5 GB VRAM, PPL 6.56). PolarEngine's custom Triton kernel is available for environments where torchao is not an option.
 
-*Benchmarked on Qwen3.5-9B, NVIDIA RTX PRO 6000 Blackwell Server Edition.*
+---
+
+## Results (Qwen3.5-9B, RTX PRO 6000 Blackwell)
+
+| Method | tok/s | VRAM | PPL (WikiText-2) | Notes |
+|--------|-------|------|-------------------|-------|
+| FP16 baseline | 45.7 | 17.9 GB | 6.37 | Reference |
+| **PolarQuant Q5 + torchao INT4** | **43.1** | **6.5 GB** | **6.56** | **Recommended** |
+| torchao INT4 (absmax) | 43.3 | 6.3 GB | 6.68 | |
+| BnB NF4 | 34.6 | 7.7 GB | ~6.7 | |
+| PolarEngine v4 (Triton) | 34.2 | 7.9 GB | 6.89 | Custom kernel |
+| PolarQuant Q5 dequant FP16 | 45.9 | 18.1 GB | 6.39 | Near-lossless |
+| PolarQuant MLX Q4 | 19.7 | 4.8 GB | 6.90 | Mac mini M4 16 GB |
+
+### PolarQuant Ablation (Q5, Qwen3.5-9B)
+
+| Configuration | PPL | Delta vs FP16 |
+|---------------|-----|---------------|
+| Absmax Q5 (baseline) | 6.9030 | +0.53 |
+| + Hadamard rotation | 6.4010 | +0.03 |
+| + Lloyd-Max centroids | 6.9139 | +0.54 |
+| + Both (PolarQuant Q5) | 6.3909 | +0.02 |
+
+Hadamard rotation accounts for 98% of the improvement. The Walsh-Hadamard transform makes weight distributions approximately Gaussian, enabling near-optimal uniform quantization.
+
+---
 
 ## How It Works
 
 PolarQuant quantization:
 1. **Normalize** weight blocks by L2 norm
-2. **Rotate** via Walsh-Hadamard Transform (makes weights Gaussian)
+2. **Rotate** via Walsh-Hadamard Transform (makes weights Gaussian -- 98% of quality gain)
 3. **Quantize** using Lloyd-Max optimal centroids for N(0,1)
 4. **Store** codes (int8/nibble-packed) + per-block norms (fp16)
 
@@ -26,6 +46,8 @@ Inference keeps weights quantized in GPU VRAM:
 - FWHT applied to input (not weights) -- 25x faster via matmul
 - FWHT cached across Q/K/V projections (69x total speedup)
 - INT4 nibble packing for Q3/Q4 layers (36% VRAM savings)
+
+---
 
 ## Installation
 
@@ -45,26 +67,54 @@ Optional CUDA kernels (for CUDA graph support):
 pip install -e ".[cuda]"
 ```
 
+---
+
 ## Quick Start
 
-### 1. Quantize a model
+### Option A: PolarQuant Q5 + torchao (Recommended)
+
+```python
+from transformers import AutoModelForCausalLM, AutoTokenizer
+from torchao.quantization import quantize_, Int4WeightOnlyConfig
+import torch
+
+# Load PolarQuant Q5 model (auto-dequantizes to FP16)
+model = AutoModelForCausalLM.from_pretrained(
+    "caiovicentino1/Qwen3.5-9B-PolarQuant-Q5",
+    dtype=torch.float16, device_map="auto"
+)
+tokenizer = AutoTokenizer.from_pretrained("caiovicentino1/Qwen3.5-9B-PolarQuant-Q5")
+
+# Apply torchao INT4 for fast inference (43 tok/s, 6.5 GB VRAM)
+quantize_(model, Int4WeightOnlyConfig(group_size=128))
+
+inputs = tokenizer("Hello!", return_tensors="pt").to(model.device)
+output = model.generate(**inputs, max_new_tokens=100)
+print(tokenizer.decode(output[0], skip_special_tokens=True))
+```
+
+### Option B: PolarEngine Triton Kernel
+
+#### 1. Quantize a model
 ```bash
 python -m polarengine_vllm.quantize \
     --model Qwen/Qwen3.5-9B \
     --output ./Qwen3.5-9B-PolarEngine/
 ```
 
-### 2. Serve with vLLM
+#### 2. Serve with vLLM
 ```bash
 vllm serve ./Qwen3.5-9B-PolarEngine/ --quantization polarengine
 ```
 
-### 3. Use from Python
+#### 3. Use from Python
 ```python
 from vllm import LLM
 model = LLM("./Qwen3.5-9B-PolarEngine/", quantization="polarengine")
 output = model.generate("Explain quantum computing:")
 ```
+
+---
 
 ## Mixed-Bit Assignment
 
@@ -87,13 +137,28 @@ Input x -> Pad -> FWHT(x) via matmul -> Triton GEMV Kernel -> Output
                                  (quantized, in VRAM)
 ```
 
+---
+
+## Published Models
+
+| Model | Link | Notes |
+|-------|------|-------|
+| Qwen3.5-9B PolarQuant Q5 | [HuggingFace](https://huggingface.co/caiovicentino1/Qwen3.5-9B-PolarQuant-Q5) | Recommended, 9.1 GB |
+| Qwen3.5-9B PolarQuant MLX 4-bit | [HuggingFace](https://huggingface.co/caiovicentino1/Qwen3.5-9B-PolarQuant-MLX-4bit) | Apple Silicon |
+| Qwen3.5-9B PolarEngine v4 | [HuggingFace](https://huggingface.co/caiovicentino1/Qwen3.5-9B-PolarEngine-v4) | Triton kernel |
+
+See the [main EOQ repository](https://github.com/caiovicentino/eoq-quantization) for additional models and full documentation.
+
+---
+
 ## Citation
 
 ```bibtex
-@software{eoq2026,
-    title={EOQ: Entropy-Optimal Quantization},
+@article{vicentino2026polarquant,
+    title={PolarQuant: Near-Lossless LLM Quantization via Walsh-Hadamard Rotation
+           and Entropy-Optimal Coding},
     author={Vicentino, Caio},
-    url={https://github.com/caiovicentino/eoq-quantization},
+    journal={arXiv preprint arXiv:2603.7424577},
     year={2026}
 }
 ```
