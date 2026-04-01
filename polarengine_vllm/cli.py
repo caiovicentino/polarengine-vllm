@@ -164,7 +164,45 @@ def convert(source: str, output_dir: str):
                 new_weight_map[k] = shard_name
             print(f"    {shard_name}: {len(output_tensors)} tensors")
 
-    # Save new index
+    # Download missing buffers from original base model
+    base_model = polar_config.get("base_model")
+    if base_model:
+        print(f"\n  Checking for missing buffers from {base_model}...", flush=True)
+        try:
+            base_dir = snapshot_download(base_model,
+                allow_patterns=["*.safetensors", "model.safetensors.index.json"])
+            base_index_path = os.path.join(base_dir, "model.safetensors.index.json")
+            if os.path.exists(base_index_path):
+                with open(base_index_path) as f:
+                    base_index = json.load(f)
+                base_wmap = base_index["weight_map"]
+                # Find keys in base that are NOT in our output
+                missing = set(base_wmap.keys()) - set(new_weight_map.keys())
+                if missing:
+                    print(f"  Found {len(missing)} missing tensors (buffers), recovering...")
+                    # Group by shard
+                    miss_by_shard = {}
+                    for k in missing:
+                        miss_by_shard.setdefault(base_wmap[k], []).append(k)
+                    extra_shard_name = "model-extra-buffers.safetensors"
+                    extra_tensors = {}
+                    for shard, keys in miss_by_shard.items():
+                        shard_path = os.path.join(base_dir, shard)
+                        with safe_open(shard_path, framework="pt") as f:
+                            for k in keys:
+                                if k in f.keys():
+                                    extra_tensors[k] = f.get_tensor(k)
+                    if extra_tensors:
+                        save_file(extra_tensors, os.path.join(output_dir, extra_shard_name))
+                        for k in extra_tensors:
+                            new_weight_map[k] = extra_shard_name
+                        print(f"  Recovered {len(extra_tensors)} buffers")
+                else:
+                    print(f"  No missing tensors")
+        except Exception as e:
+            print(f"  Warning: could not recover buffers: {e}")
+
+    # Re-save index with any new entries
     new_index = {"metadata": weight_index.get("metadata", {}), "weight_map": new_weight_map}
     with open(os.path.join(output_dir, "model.safetensors.index.json"), "w") as f:
         json.dump(new_index, f, indent=2)
