@@ -185,6 +185,10 @@ def _build_config_class(decorator):
                         return self._inner.create_weights(layer, **kwargs)
                     def apply(self, *args, **kwargs):
                         return self._inner.apply(*args, **kwargs)
+                    def get_fused_moe_quant_config(self):
+                        if hasattr(self, '_inner'):
+                            return self._inner.get_fused_moe_quant_config()
+                        return None
                 return _DeferredUnquantMoE()
 
             # Guard: only quantize Linear layers.
