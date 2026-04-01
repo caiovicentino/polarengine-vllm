@@ -94,6 +94,121 @@ def unpack_codes_half_block(packed: torch.Tensor, block_size: int = 128) -> torc
     return codes
 
 
+def pack_codes_q5(codes: torch.Tensor, block_size: int = 128) -> torch.Tensor:
+    """Pack Q5 codes (0-31) from int8 into 5-bit packed uint8.
+
+    Input: (N, n_blocks * block_size) int8, values 0-31
+    Output: (N, n_blocks * packed_block_bytes) uint8
+
+    Each block of 128 codes (640 bits) packs into 80 bytes.
+
+    Packing layout per block of 128 codes:
+    - Process 8 codes at a time into 5 bytes (8 x 5 bits = 40 bits = 5 bytes)
+    - 128 codes / 8 = 16 groups -> 16 x 5 = 80 bytes per block
+
+    For 8 codes [c0..c7], each 5 bits, packed into 5 bytes [b0..b4]:
+      b0 = (c0) | (c1 << 5)           -> c0[4:0] + c1[2:0]
+      b1 = (c1 >> 3) | (c2 << 2) | (c3 << 7)  -> c1[4:3] + c2[4:0] + c3[0]
+      b2 = (c3 >> 1) | (c4 << 4)      -> c3[4:1] + c4[3:0]
+      b3 = (c4 >> 4) | (c5 << 1) | (c6 << 6)  -> c4[4] + c5[4:0] + c6[1:0]
+      b4 = (c6 >> 2) | (c7 << 3)      -> c6[4:2] + c7[4:0]
+
+    Args:
+        codes: (N, K) int8 tensor with values 0-31, K must be a multiple of block_size
+        block_size: must be a multiple of 8 (default 128)
+
+    Returns:
+        packed: (N, n_blocks * (block_size * 5 // 8)) uint8 tensor
+    """
+    assert block_size % 8 == 0, f"block_size must be a multiple of 8, got {block_size}"
+    *leading, K = codes.shape
+    assert K % block_size == 0, (
+        f"Last dimension ({K}) must be a multiple of block_size ({block_size})"
+    )
+
+    # Validate code range: must be 0-31 for 5-bit packing
+    codes_long = codes.to(torch.long) & 0xFF  # ensure unsigned interpretation
+    assert (codes_long <= 31).all(), (
+        "All code values must be in [0, 31] for Q5 packing. "
+        f"Found max={codes_long.max().item()}"
+    )
+
+    # Reshape so that the last dimension is groups of 8
+    # (*leading, K) -> (*leading, K // 8, 8)
+    grouped = codes_long.reshape(*leading, K // 8, 8)
+
+    c0 = grouped[..., 0]
+    c1 = grouped[..., 1]
+    c2 = grouped[..., 2]
+    c3 = grouped[..., 3]
+    c4 = grouped[..., 4]
+    c5 = grouped[..., 5]
+    c6 = grouped[..., 6]
+    c7 = grouped[..., 7]
+
+    b0 = (c0 | (c1 << 5)) & 0xFF
+    b1 = ((c1 >> 3) | (c2 << 2) | (c3 << 7)) & 0xFF
+    b2 = ((c3 >> 1) | (c4 << 4)) & 0xFF
+    b3 = ((c4 >> 4) | (c5 << 1) | (c6 << 6)) & 0xFF
+    b4 = ((c6 >> 2) | (c7 << 3)) & 0xFF
+
+    # Stack: (*leading, K // 8, 5)
+    packed = torch.stack([b0, b1, b2, b3, b4], dim=-1).to(torch.uint8)
+
+    # Flatten the last two dims: (*leading, K * 5 // 8)
+    packed = packed.reshape(*leading, K * 5 // 8)
+    return packed
+
+
+def unpack_codes_q5(packed: torch.Tensor, block_size: int = 128) -> torch.Tensor:
+    """Inverse of pack_codes_q5. Returns int8 tensor with values 0-31.
+
+    Args:
+        packed: (*leading, K_packed) uint8 tensor where K_packed = original_K * 5 // 8
+        block_size: must be a multiple of 8 (default 128)
+
+    Returns:
+        codes: (*leading, K_packed * 8 // 5) int8 tensor with values 0-31
+    """
+    assert block_size % 8 == 0, f"block_size must be a multiple of 8, got {block_size}"
+    *leading, K_packed = packed.shape
+    assert (K_packed * 8) % 5 == 0, (
+        f"Packed dimension ({K_packed}) is not valid for Q5 unpacking "
+        f"(K_packed * 8 must be divisible by 5)"
+    )
+
+    packed_block_bytes = block_size * 5 // 8
+    assert K_packed % packed_block_bytes == 0, (
+        f"Packed dimension ({K_packed}) must be a multiple of "
+        f"packed_block_bytes ({packed_block_bytes})"
+    )
+
+    # Reshape to groups of 5 bytes: (*leading, K_packed // 5, 5)
+    p = packed.to(torch.long).reshape(*leading, K_packed // 5, 5)
+
+    b0 = p[..., 0]
+    b1 = p[..., 1]
+    b2 = p[..., 2]
+    b3 = p[..., 3]
+    b4 = p[..., 4]
+
+    c0 = b0 & 0x1F
+    c1 = ((b0 >> 5) | (b1 << 3)) & 0x1F
+    c2 = (b1 >> 2) & 0x1F
+    c3 = ((b1 >> 7) | (b2 << 1)) & 0x1F
+    c4 = ((b2 >> 4) | (b3 << 4)) & 0x1F
+    c5 = (b3 >> 1) & 0x1F
+    c6 = ((b3 >> 6) | (b4 << 2)) & 0x1F
+    c7 = (b4 >> 3) & 0x1F
+
+    # Stack: (*leading, K_packed // 5, 8)
+    codes = torch.stack([c0, c1, c2, c3, c4, c5, c6, c7], dim=-1).to(torch.int8)
+
+    # Flatten last two dims: (*leading, K_packed * 8 // 5)
+    codes = codes.reshape(*leading, K_packed * 8 // 5)
+    return codes
+
+
 def pack_model_codes(model: Any, block_size: int = 128) -> dict:
     """Pack all Q3/Q4 layer codes in a model in-place.
 
@@ -180,6 +295,26 @@ def verify_packing_roundtrip(codes: torch.Tensor, block_size: int = 128) -> bool
     """
     packed = pack_codes_half_block(codes, block_size)
     unpacked = unpack_codes_half_block(packed, block_size)
+
+    # Compare as uint8 to avoid sign issues
+    original_u8 = codes.to(torch.uint8)
+    unpacked_u8 = unpacked.to(torch.uint8)
+
+    return torch.equal(original_u8, unpacked_u8)
+
+
+def verify_packing_roundtrip_q5(codes: torch.Tensor, block_size: int = 128) -> bool:
+    """Verify Q5 pack -> unpack gives back original codes.
+
+    Args:
+        codes: (..., K) int8 tensor with values 0-31
+        block_size: must be a multiple of 8
+
+    Returns:
+        True if roundtrip is lossless, False otherwise
+    """
+    packed = pack_codes_q5(codes, block_size)
+    unpacked = unpack_codes_q5(packed, block_size)
 
     # Compare as uint8 to avoid sign issues
     original_u8 = codes.to(torch.uint8)
@@ -372,13 +507,185 @@ if __name__ == "__main__":
         print(f"      ({out_f:>5}, {in_f_padded:>5}) [{size_mb:>6.1f} MB]  "
               f"pack={t_pack*1000:>6.1f}ms  unpack={t_unpack*1000:>6.1f}ms")
 
+    # ==================================================================
+    # Q5 BIT-PACKING TESTS
+    # ==================================================================
+    print()
+    print("=" * 60)
+    print("  PolarEngine Q5 Bit-Packing Tests")
+    print("=" * 60)
+
+    n_levels_q5 = 32  # Q5: 0-31
+
+    # ------------------------------------------------------------------
+    # Q5-1. Roundtrip test: pack -> unpack == original
+    # ------------------------------------------------------------------
+    print("\n  [Q5-1] Roundtrip tests (pack -> unpack == original)")
+
+    test_shapes_q5 = [
+        (1, 128),
+        (64, 2688),
+        (2688, 1856),
+        (4096, 4096),
+        (12288, 4096),
+    ]
+
+    for out_f, in_f in test_shapes_q5:
+        # Pad to multiple of block_size
+        in_f_padded = ((in_f + block_size - 1) // block_size) * block_size
+        codes_q5 = torch.randint(0, n_levels_q5, (out_f, in_f_padded), dtype=torch.int8)
+
+        passed = verify_packing_roundtrip_q5(codes_q5, block_size)
+        status = "PASS" if passed else "FAIL"
+        if not passed:
+            all_pass = False
+        print(f"      [{status}] shape=({out_f:>5}, {in_f_padded:>5})")
+
+    # ------------------------------------------------------------------
+    # Q5-2. Size verification: output is exactly 5/8 of input
+    # ------------------------------------------------------------------
+    print("\n  [Q5-2] Size correctness (packed dim = K * 5 / 8)")
+
+    for out_f, in_f in test_shapes_q5:
+        in_f_padded = ((in_f + block_size - 1) // block_size) * block_size
+        codes_q5 = torch.randint(0, n_levels_q5, (out_f, in_f_padded), dtype=torch.int8)
+        packed_q5 = pack_codes_q5(codes_q5, block_size)
+
+        expected_packed_cols = in_f_padded * 5 // 8
+        expected_shape = (out_f, expected_packed_cols)
+        shape_ok = packed_q5.shape == expected_shape
+        dtype_ok = packed_q5.dtype == torch.uint8
+        status = "PASS" if (shape_ok and dtype_ok) else "FAIL"
+        if not (shape_ok and dtype_ok):
+            all_pass = False
+        print(f"      [{status}] ({out_f:>5}, {in_f_padded:>5}) -> packed {packed_q5.shape}, "
+              f"expected {expected_shape}, dtype={packed_q5.dtype}")
+
+    # ------------------------------------------------------------------
+    # Q5-3. Edge cases: all zeros, all 31s, boundary values
+    # ------------------------------------------------------------------
+    print("\n  [Q5-3] Edge cases")
+
+    # All zeros
+    codes_q5_zeros = torch.zeros(256, 1024, dtype=torch.int8)
+    passed = verify_packing_roundtrip_q5(codes_q5_zeros, block_size)
+    status = "PASS" if passed else "FAIL"
+    if not passed:
+        all_pass = False
+    print(f"      [{status}] All zeros")
+
+    # All 31s (max Q5 value)
+    codes_q5_max = torch.full((256, 1024), 31, dtype=torch.int8)
+    passed = verify_packing_roundtrip_q5(codes_q5_max, block_size)
+    status = "PASS" if passed else "FAIL"
+    if not passed:
+        all_pass = False
+    print(f"      [{status}] All 31s")
+
+    # Value 1 everywhere
+    codes_q5_one = torch.ones(256, 1024, dtype=torch.int8)
+    passed = verify_packing_roundtrip_q5(codes_q5_one, block_size)
+    status = "PASS" if passed else "FAIL"
+    if not passed:
+        all_pass = False
+    print(f"      [{status}] All 1s")
+
+    # Value 30 everywhere
+    codes_q5_30 = torch.full((256, 1024), 30, dtype=torch.int8)
+    passed = verify_packing_roundtrip_q5(codes_q5_30, block_size)
+    status = "PASS" if passed else "FAIL"
+    if not passed:
+        all_pass = False
+    print(f"      [{status}] All 30s")
+
+    # Alternating 0 and 31
+    codes_q5_alt = torch.zeros(256, 1024, dtype=torch.int8)
+    codes_q5_alt[:, ::2] = 31
+    passed = verify_packing_roundtrip_q5(codes_q5_alt, block_size)
+    status = "PASS" if passed else "FAIL"
+    if not passed:
+        all_pass = False
+    print(f"      [{status}] Alternating 0/31")
+
+    # Sequential pattern: 0,1,2,...,31,0,1,... (covers all values)
+    codes_q5_seq = torch.zeros(128, 1024, dtype=torch.int8)
+    for i in range(1024):
+        codes_q5_seq[:, i] = i % 32
+    passed = verify_packing_roundtrip_q5(codes_q5_seq, block_size)
+    status = "PASS" if passed else "FAIL"
+    if not passed:
+        all_pass = False
+    print(f"      [{status}] Sequential 0-31 pattern")
+
+    # Non-standard block sizes (still multiple of 8)
+    for bs_q5 in [8, 16, 32, 64, 256]:
+        in_f_pad_q5 = bs_q5 * 4  # 4 blocks
+        codes_bs_q5 = torch.randint(0, n_levels_q5, (64, in_f_pad_q5), dtype=torch.int8)
+        passed = verify_packing_roundtrip_q5(codes_bs_q5, bs_q5)
+        status = "PASS" if passed else "FAIL"
+        if not passed:
+            all_pass = False
+        print(f"      [{status}] block_size={bs_q5}")
+
+    # ------------------------------------------------------------------
+    # Q5-4. Compression ratio verification
+    # ------------------------------------------------------------------
+    print("\n  [Q5-4] Compression ratio (5/8 = 62.5% of original)")
+
+    codes_cr = torch.randint(0, n_levels_q5, (4096, 4096), dtype=torch.int8)
+    packed_cr = pack_codes_q5(codes_cr, block_size)
+    original_bytes = codes_cr.numel() * codes_cr.element_size()
+    packed_bytes = packed_cr.numel() * packed_cr.element_size()
+    ratio = packed_bytes / original_bytes
+    ratio_ok = abs(ratio - 5.0 / 8.0) < 1e-6
+    status = "PASS" if ratio_ok else "FAIL"
+    if not ratio_ok:
+        all_pass = False
+    print(f"      [{status}] Ratio: {ratio:.6f} (expected {5/8:.6f}), "
+          f"{original_bytes / 1024**2:.1f} MB -> {packed_bytes / 1024**2:.1f} MB")
+
+    # ------------------------------------------------------------------
+    # Q5-5. Benchmark: packing speed
+    # ------------------------------------------------------------------
+    print("\n  [Q5-5] Q5 Packing speed benchmark (CPU)")
+
+    bench_shapes_q5 = [
+        (4096, 4096),
+        (12288, 4096),
+    ]
+
+    for out_f, in_f in bench_shapes_q5:
+        in_f_padded = ((in_f + block_size - 1) // block_size) * block_size
+        codes_bench = torch.randint(0, n_levels_q5, (out_f, in_f_padded), dtype=torch.int8)
+
+        # Warmup
+        _ = pack_codes_q5(codes_bench, block_size)
+        _ = unpack_codes_q5(_, block_size)
+
+        # Time packing
+        n_iters = 10
+        t0 = time.perf_counter()
+        for _ in range(n_iters):
+            packed_bench = pack_codes_q5(codes_bench, block_size)
+        t_pack = (time.perf_counter() - t0) / n_iters
+
+        # Time unpacking
+        t0 = time.perf_counter()
+        for _ in range(n_iters):
+            unpacked_bench = unpack_codes_q5(packed_bench, block_size)
+        t_unpack = (time.perf_counter() - t0) / n_iters
+
+        size_mb = codes_bench.numel() / (1024 * 1024)
+        print(f"      ({out_f:>5}, {in_f_padded:>5}) [{size_mb:>6.1f} MB]  "
+              f"pack={t_pack*1000:>6.1f}ms  unpack={t_unpack*1000:>6.1f}ms")
+
     # ------------------------------------------------------------------
     # Final verdict
     # ------------------------------------------------------------------
     print()
     print("=" * 60)
     if all_pass:
-        print("All packing tests passed!")
+        print("All packing tests passed! (INT4 + Q5)")
     else:
         print("SOME TESTS FAILED.")
         sys.exit(1)

@@ -134,7 +134,7 @@ def _build_config_class(decorator):
             block_size = config.get("block_size", 128)
             fmt = config.get("format", "polar_engine_v4")
 
-            if fmt not in ("polar_engine_v4",):
+            if fmt not in ("polar_engine_v4", "polar_engine_v5"):
                 logger.warning(
                     "Unrecognised PolarEngine format '%s'. "
                     "Proceeding, but weight loading may fail.",
@@ -168,6 +168,16 @@ def _build_config_class(decorator):
             falls back to the default (unquantized) path.
             """
             from polarengine_vllm.linear_method import PolarQuantLinearMethod
+
+            # Guard: only quantize Linear layers.  We check both the
+            # standard nn.Linear type and vLLM custom linear types whose
+            # class name contains "Linear" (e.g. ColumnParallelLinear,
+            # RowParallelLinear, MergedColumnParallelLinear, etc.).
+            is_linear = isinstance(layer, torch.nn.Linear)
+            if not is_linear:
+                class_name = type(layer).__name__
+                if "Linear" not in class_name:
+                    return None
 
             # Determine the bit width for this specific layer.
             bits = self._resolve_bits(prefix)

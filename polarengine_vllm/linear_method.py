@@ -26,6 +26,7 @@ from polarengine_vllm.kernels.polar_gemv import (
     polar_gemv,
     polar_gemv_packed,
 )
+from polarengine_vllm.kernels.polar_gemm import polar_matmul
 from polarengine_vllm.utils import get_centroids
 
 # ---------------------------------------------------------------------------
@@ -195,34 +196,24 @@ class PolarQuantLinearMethod:
             x_tf = fwht_matmul(x_p, layer.block_size).view(batch, -1)
             self._fwht_cache.put(x, layer.in_f, x_tf)
 
-        # --- Triton GEMV ---
-        output = torch.zeros(
-            batch, layer.out_f, device=x.device, dtype=torch.float32,
+        # --- Triton GEMV/GEMM (adaptive: GEMV for batch=1, GEMM for batch>1) ---
+        is_packed = getattr(layer, "packed", False)
+        output = polar_matmul(
+            codes=layer.codes if not is_packed else None,
+            x_transformed=x_tf,
+            norms=layer.norms,
+            ct_scaled=layer.ct_scaled,
+            out_f=layer.out_f,
+            in_f_padded=layer.in_f_padded,
+            n_blocks=layer.n_blocks,
+            block_size=layer.block_size,
+            packed=is_packed,
+            packed_codes=getattr(layer, "codes_packed", None) if is_packed else None,
+            in_f_half=getattr(layer, "in_f_half", None) if is_packed else None,
         )
-
-        for b in range(batch):
-            if getattr(layer, "packed", False):
-                output[b] = polar_gemv_packed(
-                    layer.codes_packed,
-                    x_tf[b],
-                    layer.norms,
-                    layer.ct_scaled,
-                    layer.out_f,
-                    layer.in_f_half,
-                    layer.n_blocks,
-                    layer.block_size,
-                )
-            else:
-                output[b] = polar_gemv(
-                    layer.codes,
-                    x_tf[b],
-                    layer.norms,
-                    layer.ct_scaled,
-                    layer.out_f,
-                    layer.in_f_padded,
-                    layer.n_blocks,
-                    layer.block_size,
-                )
+        # Ensure output is (batch, out_f) for reshape below
+        if output.dim() == 1:
+            output = output.unsqueeze(0)
 
         # --- reshape and bias ---
         result = output.half().view(*orig_shape[:-1], layer.out_f)

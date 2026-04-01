@@ -20,6 +20,8 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 import torch
 from safetensors import safe_open
 
+from polarengine_vllm.packing import unpack_codes_q5
+
 logger = logging.getLogger(__name__)
 
 # Suffixes that identify PolarQuant tensor components.
@@ -53,7 +55,7 @@ def load_polar_config(model_dir: str) -> dict:
         config = json.load(f)
 
     fmt = config.get("format", "unknown")
-    if fmt not in ("polar_engine_v4",):
+    if fmt not in ("polar_engine_v4", "polar_engine_v5"):
         logger.warning(
             "Unrecognised PolarEngine format '%s'. "
             "Proceeding, but weight loading may fail.",
@@ -327,6 +329,14 @@ class PolarWeightLoader:
                 component_name = suffix.lstrip(".")  # "codes", "norms", "ct_scaled"
                 result[component_name] = self.load_tensor(key)
 
+            # Detect Q5-packed codes and unpack at load time.
+            # After unpacking, kernels receive standard int8 codes (values 0-31).
+            layers_meta = self.polar_config.get("layers", {})
+            layer_meta = layers_meta.get(layer_name, {})
+            if layer_meta.get("packed_q5", False):
+                block_size = layer_meta.get("block_size", self.polar_config.get("block_size", 128))
+                result["codes"] = unpack_codes_q5(result["codes"], block_size)
+
             # Bias is optional.
             bias_key = layer_name + ".bias"
             if bias_key in self.weight_map:
@@ -337,10 +347,16 @@ class PolarWeightLoader:
             weight_key = layer_name + ".weight"
             if weight_key in self.weight_map:
                 result["weight"] = self.load_tensor(weight_key)
+            elif layer_name in self.weight_map:
+                # Fallback: bare parameter key without .weight suffix
+                # (some models, e.g. Nemotron, store params under the
+                # bare name rather than name + ".weight").
+                result["weight"] = self.load_tensor(layer_name)
             else:
                 raise KeyError(
                     f"Cannot find weight tensor for non-quantized layer "
-                    f"'{layer_name}'. Tried key '{weight_key}'."
+                    f"'{layer_name}'. Tried keys '{weight_key}' and "
+                    f"'{layer_name}'."
                 )
 
             bias_key = layer_name + ".bias"
@@ -401,24 +417,30 @@ class PolarWeightLoader:
         return 5  # default fallback
 
     def is_packed(self, layer_name: str) -> bool:
-        """Check if a quantized layer uses packed INT4 codes.
+        """Check if a quantized layer uses packed codes (INT4 nibble or Q5 5-bit).
 
-        Packed layers have <= 4 bits and their codes tensor has half the
-        expected columns (in_f_padded // 2 instead of in_f_padded).
+        Packed layers have:
+        - bits <= 4: nibble-packed (in_f_padded // 2 columns)
+        - bits == 5 with packed_q5: 5-bit packed (in_f_padded * 5 // 8 columns)
 
         Args:
             layer_name: Base layer name.
 
         Returns:
-            True if the layer's codes are nibble-packed.
+            True if the layer's codes are packed (either INT4 nibble or Q5 5-bit).
         """
+        layers_meta = self.polar_config.get("layers", {})
+        meta = layers_meta.get(layer_name)
+
+        # Check for Q5 packing via explicit metadata flag
+        if meta and meta.get("packed_q5", False):
+            return True
+
         bits = self.get_layer_bits(layer_name)
         if bits > 4:
             return False
 
         # Verify by checking the actual tensor shape against metadata.
-        layers_meta = self.polar_config.get("layers", {})
-        meta = layers_meta.get(layer_name)
         if meta:
             in_f_padded = meta.get("in_f_padded", 0)
             codes_key = layer_name + ".codes"

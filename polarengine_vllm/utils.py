@@ -121,6 +121,7 @@ DEFAULT_BIT_ASSIGNMENT: Dict[str, int] = {
     "gate_proj": 3,
     "up_proj": 3,
     "down_proj": 4,
+    "in_proj": 5,
 }
 
 # Layer-name fragments that should never be quantized (stay FP16).
@@ -130,6 +131,7 @@ _SKIP_PATTERNS = (
     "rmsnorm",
     "a_log",
     "dt_bias",
+    "dt_proj",
     "conv1d",
 )
 

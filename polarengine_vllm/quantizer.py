@@ -36,6 +36,7 @@ from polarengine_vllm.utils import (
     get_centroids,
     pack_codes_half_block,
 )
+from polarengine_vllm.packing import pack_codes_q5
 
 logger = logging.getLogger(__name__)
 
@@ -264,6 +265,7 @@ class PolarQuantizer:
         model_name: str,
         output_dir: str,
         pack_int4: bool = True,
+        pack_q5: bool = True,
     ) -> None:
         """Full pipeline: load FP16 model -> quantize layers -> save safetensors.
 
@@ -273,6 +275,7 @@ class PolarQuantizer:
           3. Skip layers with ``bits == 16`` (norms, biases, etc.) -- kept as FP16.
           4. Quantize each weight with :meth:`quantize_tensor`.
           5. Optionally pack Q3/Q4 codes as nibbles (``pack_int4``).
+          5b. Optionally pack Q5 codes as 5-bit packed (``pack_q5``).
           6. Save as sharded safetensors (5 GB per shard).
           7. Save ``polar_config.json`` with layer metadata.
           8. Copy tokenizer and model config from the source model.
@@ -281,6 +284,7 @@ class PolarQuantizer:
             model_name: HuggingFace model ID or local path.
             output_dir: Directory to write the quantized model.
             pack_int4:  If True (default), nibble-pack codes for layers with bits <= 4.
+            pack_q5:    If True (default), 5-bit pack codes for layers with bits == 5.
         """
         from transformers import AutoModelForCausalLM, AutoTokenizer
 
@@ -341,15 +345,19 @@ class PolarQuantizer:
 
             # Optionally nibble-pack codes for bits <= 4
             packed = False
+            packed_q5_flag = False
             if pack_int4 and bits <= 4:
                 codes = pack_codes_half_block(codes, self.block_size)
                 packed = True
+            elif pack_q5 and bits == 5:
+                codes = pack_codes_q5(codes, self.block_size)
+                packed_q5_flag = True
 
             output_tensors[f"{key_prefix}.codes"] = codes.contiguous()
             output_tensors[f"{key_prefix}.norms"] = norms.contiguous()
             output_tensors[f"{key_prefix}.ct_scaled"] = ct_scaled.contiguous()
 
-            layers_meta[key_prefix] = {
+            layer_meta_entry = {
                 "in_features": in_f,
                 "out_features": out_f,
                 "in_features_padded": in_f_padded,
@@ -359,6 +367,9 @@ class PolarQuantizer:
                 "packed": packed,
                 "scale_dtype": "float16",
             }
+            if packed_q5_flag:
+                layer_meta_entry["packed_q5"] = True
+            layers_meta[key_prefix] = layer_meta_entry
 
             if layer_count % 20 == 0:
                 logger.info("  Quantized %d layers...", layer_count)
@@ -375,8 +386,13 @@ class PolarQuantizer:
         _save_sharded_safetensors(output_tensors, output_dir, max_shard_bytes=5 * 1024**3)
 
         # --- 7. Save polar_config.json ---
+        # Use v5 format if any layer uses Q5 packing, otherwise v4 for backward compat.
+        has_q5_packed = any(
+            meta.get("packed_q5", False) for meta in layers_meta.values()
+        )
+        format_version = "polar_engine_v5" if has_q5_packed else "polar_engine_v4"
         polar_config = {
-            "format": "polar_engine_v4",
+            "format": format_version,
             "quantization": "polarengine",
             "block_size": self.block_size,
             "bit_assignment": self.bit_assignment,
@@ -442,6 +458,11 @@ if __name__ == "__main__":
         action="store_true",
         help="Disable nibble-packing of Q3/Q4 codes (store as int8 instead).",
     )
+    parser.add_argument(
+        "--no-pack-q5",
+        action="store_true",
+        help="Disable 5-bit packing of Q5 codes (store as int8 instead).",
+    )
     args = parser.parse_args()
 
     quantizer = PolarQuantizer(block_size=args.block_size)
@@ -449,4 +470,5 @@ if __name__ == "__main__":
         args.model,
         args.output,
         pack_int4=not args.no_pack,
+        pack_q5=not args.no_pack_q5,
     )
