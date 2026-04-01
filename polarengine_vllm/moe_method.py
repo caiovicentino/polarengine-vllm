@@ -98,14 +98,10 @@ class PolarPassthroughMoEMethod:
         return None
 
 
-# Register as FusedMoEMethodBase subclass for isinstance checks
-# This avoids calling FusedMoEMethodBase.__init__ while passing isinstance()
+# Register as virtual subclass of FusedMoEMethodBase for isinstance checks
+# Uses ABC's register() — no __init__ call, no __bases__ manipulation
 try:
     from vllm.model_executor.layers.fused_moe.layer import FusedMoEMethodBase
-    # Monkey-patch the class hierarchy
-    PolarPassthroughMoEMethod.__bases__ = (FusedMoEMethodBase,) + tuple(
-        b for b in PolarPassthroughMoEMethod.__bases__
-        if b is not object
-    )
+    FusedMoEMethodBase.register(PolarPassthroughMoEMethod)
 except ImportError:
     pass
