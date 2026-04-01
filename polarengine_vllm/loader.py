@@ -25,7 +25,7 @@ from polarengine_vllm.packing import unpack_codes_q5
 logger = logging.getLogger(__name__)
 
 # Suffixes that identify PolarQuant tensor components.
-_POLAR_SUFFIXES = (".codes", ".norms", ".ct_scaled")
+_POLAR_SUFFIXES = (".codes", ".norms", ".ct_scaled", ".ct")
 
 
 # ===================================================================
@@ -324,10 +324,26 @@ class PolarWeightLoader:
 
         if self.is_quantized_layer(layer_name):
             # Load mandatory PolarQuant components.
-            for suffix in _POLAR_SUFFIXES:
+            for suffix in (".codes", ".norms"):
                 key = layer_name + suffix
-                component_name = suffix.lstrip(".")  # "codes", "norms", "ct_scaled"
+                component_name = suffix.lstrip(".")
                 result[component_name] = self.load_tensor(key)
+
+            # Load centroids: try ct_scaled first, fallback to ct (auto-scale)
+            ct_scaled_key = layer_name + ".ct_scaled"
+            ct_key = layer_name + ".ct"
+            if ct_scaled_key in self.weight_map:
+                result["ct_scaled"] = self.load_tensor(ct_scaled_key)
+            elif ct_key in self.weight_map:
+                import math
+                block_size = self.polar_config.get("block_size", 128)
+                ct_raw = self.load_tensor(ct_key)
+                result["ct_scaled"] = ct_raw / math.sqrt(block_size)
+            else:
+                raise KeyError(
+                    f"No centroids found for '{layer_name}'. "
+                    f"Tried '{ct_scaled_key}' and '{ct_key}'."
+                )
 
             # Detect Q5-packed codes and unpack at load time.
             # After unpacking, kernels receive standard int8 codes (values 0-31).
