@@ -89,6 +89,7 @@ def _build_config_class(decorator):
             self.block_size: int = block_size
             self.bit_assignment: Dict[str, int] = bit_assignment or {}
             self.layers_meta: Dict[str, Dict[str, Any]] = layers_meta or {}
+            self.packed_modules_mapping: Dict[str, Any] = {}
 
         def __repr__(self) -> str:
             n_layers = len(self.layers_meta)
