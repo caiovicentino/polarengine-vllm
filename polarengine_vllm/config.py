@@ -176,9 +176,9 @@ def _build_config_class(decorator):
             # Check if this is a FusedMoE layer — needs FusedMoEMethodBase, not LinearMethod
             class_name = type(layer).__name__
             if "MoE" in class_name or "Moe" in class_name or "moe" in class_name:
-                return UnquantizedFusedMoEMethod()
-            if isinstance(layer, FusedMoEMethodBase.__class__):
-                return UnquantizedFusedMoEMethod()
+                return UnquantizedFusedMoEMethod(moe=layer)
+            if hasattr(layer, 'num_experts'):
+                return UnquantizedFusedMoEMethod(moe=layer)
 
             # Guard: only quantize Linear layers.
             is_linear = isinstance(layer, torch.nn.Linear)
