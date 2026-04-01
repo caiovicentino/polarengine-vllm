@@ -169,21 +169,19 @@ def _build_config_class(decorator):
             falls back to the default (unquantized) path.
             """
             from polarengine_vllm.linear_method import PolarQuantLinearMethod
+            from vllm.model_executor.layers.quantization.utils.quant_utils import UnquantizedLinearMethod
 
-            # Guard: only quantize Linear layers.  We check both the
-            # standard nn.Linear type and vLLM custom linear types whose
-            # class name contains "Linear" (e.g. ColumnParallelLinear,
-            # RowParallelLinear, MergedColumnParallelLinear, etc.).
+            # Guard: only quantize Linear layers.
             is_linear = isinstance(layer, torch.nn.Linear)
             if not is_linear:
                 class_name = type(layer).__name__
                 if "Linear" not in class_name:
-                    return None
+                    return UnquantizedLinearMethod()
 
             # Determine the bit width for this specific layer.
             bits = self._resolve_bits(prefix)
             if bits is None:
-                return None
+                return UnquantizedLinearMethod()
 
             return PolarQuantLinearMethod(
                 block_size=self.block_size,
