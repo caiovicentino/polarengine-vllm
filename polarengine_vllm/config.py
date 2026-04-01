@@ -171,14 +171,21 @@ def _build_config_class(decorator):
             from polarengine_vllm.linear_method import PolarQuantLinearMethod
             from vllm.model_executor.layers.linear import UnquantizedLinearMethod
             from vllm.model_executor.layers.fused_moe.layer import FusedMoEMethodBase
-            from vllm.model_executor.layers.fused_moe.unquantized_fused_moe_method import UnquantizedFusedMoEMethod
 
-            # Check if this is a FusedMoE layer — needs FusedMoEMethodBase, not LinearMethod
+            # Check if this is a FusedMoE layer — needs FusedMoEMethodBase
             class_name = type(layer).__name__
-            if "MoE" in class_name or "Moe" in class_name or "moe" in class_name:
-                return UnquantizedFusedMoEMethod(moe=layer)
-            if hasattr(layer, 'num_experts'):
-                return UnquantizedFusedMoEMethod(moe=layer)
+            is_moe = "MoE" in class_name or "Moe" in class_name or "moe" in class_name or hasattr(layer, 'num_experts')
+            if is_moe:
+                # Return a deferred unquantized MoE method that initializes lazily
+                # (can't pass moe=layer here because layer.__init__ hasn't finished)
+                class _DeferredUnquantMoE(FusedMoEMethodBase):
+                    def create_weights(self, layer, **kwargs):
+                        from vllm.model_executor.layers.fused_moe.unquantized_fused_moe_method import UnquantizedFusedMoEMethod
+                        self._inner = UnquantizedFusedMoEMethod(moe=layer)
+                        return self._inner.create_weights(layer, **kwargs)
+                    def apply(self, *args, **kwargs):
+                        return self._inner.apply(*args, **kwargs)
+                return _DeferredUnquantMoE()
 
             # Guard: only quantize Linear layers.
             is_linear = isinstance(layer, torch.nn.Linear)
