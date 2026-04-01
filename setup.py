@@ -31,6 +31,9 @@ setup(
         "vllm.general_plugins": [
             "polarengine = polarengine_vllm:register_polar_quant",
         ],
+        "console_scripts": [
+            "polarquant-convert = polarengine_vllm.cli:main",
+        ],
     },
     classifiers=[
         "Development Status :: 3 - Alpha",
