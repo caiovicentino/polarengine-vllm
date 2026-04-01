@@ -170,11 +170,19 @@ def _build_config_class(decorator):
             """
             from polarengine_vllm.linear_method import PolarQuantLinearMethod
             from vllm.model_executor.layers.linear import UnquantizedLinearMethod
+            from vllm.model_executor.layers.fused_moe.layer import FusedMoEMethodBase
+            from vllm.model_executor.layers.fused_moe.unquantized_fused_moe_method import UnquantizedFusedMoEMethod
+
+            # Check if this is a FusedMoE layer — needs FusedMoEMethodBase, not LinearMethod
+            class_name = type(layer).__name__
+            if "MoE" in class_name or "Moe" in class_name or "moe" in class_name:
+                return UnquantizedFusedMoEMethod()
+            if isinstance(layer, FusedMoEMethodBase.__class__):
+                return UnquantizedFusedMoEMethod()
 
             # Guard: only quantize Linear layers.
             is_linear = isinstance(layer, torch.nn.Linear)
             if not is_linear:
-                class_name = type(layer).__name__
                 if "Linear" not in class_name:
                     return UnquantizedLinearMethod()
 
