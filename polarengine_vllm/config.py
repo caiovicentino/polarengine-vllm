@@ -179,6 +179,9 @@ def _build_config_class(decorator):
                 # Return a deferred unquantized MoE method that initializes lazily
                 # (can't pass moe=layer here because layer.__init__ hasn't finished)
                 class _DeferredUnquantMoE(FusedMoEMethodBase):
+                    def __init__(self):
+                        # Skip FusedMoEMethodBase.__init__ which needs moe
+                        pass
                     def create_weights(self, layer, **kwargs):
                         from vllm.model_executor.layers.fused_moe.unquantized_fused_moe_method import UnquantizedFusedMoEMethod
                         self._inner = UnquantizedFusedMoEMethod(moe=layer)
