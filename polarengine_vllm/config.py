@@ -169,40 +169,19 @@ def _build_config_class(decorator):
             falls back to the default (unquantized) path.
             """
             from polarengine_vllm.linear_method import PolarQuantLinearMethod
-
-            # Find vLLM's UnquantizedLinearMethod (import path varies by version)
-            _unquant = None
-            for _path in [
-                "vllm.model_executor.layers.quantization.utils.quant_utils",
-                "vllm.model_executor.layers.quantization",
-                "vllm.model_executor.layers.linear",
-            ]:
-                try:
-                    _mod = __import__(_path, fromlist=["UnquantizedLinearMethod"])
-                    _unquant = getattr(_mod, "UnquantizedLinearMethod", None)
-                    if _unquant: break
-                except ImportError:
-                    continue
-
-            # Fallback: create a minimal unquantized method inline
-            if _unquant is None:
-                from vllm.model_executor.layers.quantization import QuantizeMethodBase
-                class _FallbackUnquantized(QuantizeMethodBase):
-                    def create_weights(self, layer, *args, **kwargs): pass
-                    def apply(self, layer, x, bias=None): return torch.nn.functional.linear(x, layer.weight, bias)
-                _unquant = _FallbackUnquantized
+            from vllm.model_executor.layers.linear import UnquantizedLinearMethod
 
             # Guard: only quantize Linear layers.
             is_linear = isinstance(layer, torch.nn.Linear)
             if not is_linear:
                 class_name = type(layer).__name__
                 if "Linear" not in class_name:
-                    return _unquant()
+                    return UnquantizedLinearMethod()
 
             # Determine the bit width for this specific layer.
             bits = self._resolve_bits(prefix)
             if bits is None:
-                return _unquant()
+                return UnquantizedLinearMethod()
 
             return PolarQuantLinearMethod(
                 block_size=self.block_size,
