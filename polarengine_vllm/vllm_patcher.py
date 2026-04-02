@@ -4,12 +4,21 @@ vLLM Expert Offloading Patcher — applies all patches needed for MoE expert cac
 Usage:
     polarengine-patch-vllm              # patch installed vLLM
     polarengine-patch-vllm --undo       # restore original files
-    MOE_EXPERT_CACHE_SIZE=8 vllm serve nvidia/Nemotron-Cascade-2-30B-A3B ...
+    FLASHINFER_DISABLE_VERSION_CHECK=1 MOE_EXPERT_CACHE_SIZE=8 \\
+        vllm serve nvidia/Nemotron-Cascade-2-30B-A3B \\
+        --trust-remote-code --dtype bfloat16 --enforce-eager
 
 Patches vLLM 0.18.x to support expert-level CPU offloading with LRU GPU cache.
 Based on PR #37190 by @e1n00r with Nemotron-specific fixes.
 
-Tested: Nemotron-Cascade-2-30B-A3B, 15.6-24.4 tok/s, correct output.
+Tested: Nemotron-Cascade-2-30B-A3B on RTX PRO 6000 Blackwell:
+  cache=8:  15.6 tok/s, VRAM 38 GB (from 92 GB), correct output
+  cache=16: 19.6 tok/s, VRAM 42 GB, correct output
+  cache=32: 24.4 tok/s, VRAM 48 GB, correct output
+
+Limitation: requires 64+ GB GPU for initial model load (peak VRAM).
+Expert weights are moved to CPU after first inference call.
+For true consumer GPU support (RTX 4090), see PR #37190.
 """
 
 import argparse
