@@ -70,7 +70,7 @@ With PolarQuant Q3, the same GPU memory supports ~5x longer context:
 
 ## Technical Reference
 
-- **Paper**: [PolarQuant: Hadamard-Rotated Lloyd-Max Quantization](https://arxiv.org/abs/2603.7424577)
+- **Paper**: [PolarQuant: Hadamard-Rotated Lloyd-Max Quantization](https://arxiv.org/abs/2603.29078)
 - **Implementation**: [github.com/caiovicentino/polarengine-vllm](https://github.com/caiovicentino/polarengine-vllm)
 - **GGML Type**: `GGML_TYPE_PQ3_0` (index 41)
 - **Block size**: 128 (`QK_PQ3_0`)
