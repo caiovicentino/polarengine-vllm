@@ -19,6 +19,10 @@ dependencies = [
 vllm = ["vllm>=0.8.0"]
 triton = ["triton>=2.0"]
 
+[project.scripts]
+polarquant-convert = "polarengine_vllm.cli:main"
+polarengine-patch-vllm = "polarengine_vllm.vllm_patcher:main"
+
 [project.entry-points."vllm.general_plugins"]
 polarengine = "polarengine_vllm:register_polar_quant"
 
