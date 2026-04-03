@@ -3,29 +3,43 @@ requires = ["setuptools>=64", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "polarengine-vllm"
-version = "0.1.0"
-description = "PolarEngine quantization plugin for vLLM"
+name = "polarquant"
+version = "0.5.0"
+description = "PolarQuant: Hadamard-rotated Lloyd-Max quantization for LLM compression. Weights + KV cache + CLI."
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.9"
+authors = [
+    {name = "Caio Vicentino", email = "caiovicentino@gmail.com"},
+]
+keywords = ["quantization", "llm", "compression", "hadamard", "transformers", "vllm", "kv-cache"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
 dependencies = [
     "torch>=2.0",
     "safetensors",
     "scipy",
+    "huggingface_hub",
 ]
+
+[project.urls]
+Homepage = "https://github.com/caiovicentino/polarengine-vllm"
+Paper = "https://arxiv.org/abs/2603.29078"
+Models = "https://huggingface.co/collections/caiovicentino1/polarquant-models-69cbc96292c5174df2088b08"
 
 [project.optional-dependencies]
 vllm = ["vllm>=0.8.0"]
 triton = ["triton>=2.0"]
-chat = ["gradio>=4.0", "torchao"]
-serve = ["fastapi", "uvicorn", "torchao"]
-all = ["gradio>=4.0", "torchao", "fastapi", "uvicorn", "huggingface_hub"]
+chat = ["gradio>=4.0", "torchao", "transformers", "accelerate", "sentencepiece"]
+serve = ["fastapi", "uvicorn", "torchao", "transformers", "accelerate", "sentencepiece"]
+all = ["gradio>=4.0", "torchao", "fastapi", "uvicorn", "transformers", "accelerate", "sentencepiece"]
 
 [project.scripts]
 polarquant = "polarengine_vllm.cli:main"
-polarquant-convert = "polarengine_vllm.cli:main"
-polarengine-patch-vllm = "polarengine_vllm.vllm_patcher:main"
 
 [project.entry-points."vllm.general_plugins"]
 polarengine = "polarengine_vllm:register_polar_quant"

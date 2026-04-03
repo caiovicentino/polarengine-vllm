@@ -1,0 +1,5 @@
+[console_scripts]
+polarquant = polarengine_vllm.cli:main
+
+[vllm.general_plugins]
+polarengine = polarengine_vllm:register_polar_quant
