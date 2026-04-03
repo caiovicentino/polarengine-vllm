@@ -382,6 +382,36 @@ Sliding window: 2048 context, 512 stride, mask first 1536.
 - **arXiv link**: `https://arxiv.org/abs/2603.29078`
 - **GitHub link**: `https://github.com/caiovicentino/eoq-quantization`
 
+## MoE Expert Quantization (CRITICAL for MoE models)
+
+MoE experts are stored as **3D `nn.Parameter`** (NOT `nn.Linear`). The standard `named_modules()` loop MISSES them.
+
+**Detection**: Check `named_parameters()` for 3D tensors with `shape[0] >= 64`:
+```python
+# After quantizing nn.Linear modules, also quantize MoE experts:
+for name, param in model.named_parameters():
+    if param.ndim == 3 and param.shape[0] >= 64:  # MoE expert tensor
+        num_experts = param.shape[0]
+        new_data = torch.empty_like(param)
+        for ei in range(num_experts):
+            new_data[ei] = pq5_quantize_2d(param.data[ei], f'{key_base}_e{ei}')
+        param.data = new_data
+```
+
+**Key facts:**
+- Gemma 4 26B-A4B: `gate_up_proj` (128, 1408, 2816) + `down_proj` (128, 2816, 704) × 30 layers = 7,680 experts
+- torchao INT4 does NOT work on 3D nn.Parameter — only nn.Linear. Expert weights stay BF16 after PQ5 dequant.
+- For consumer GPU inference: use **expert offloading** (vLLM fork `moe_expert_cache_size=8`) — keeps only 8 experts on GPU, rest on CPU.
+- **Router weights** (`.gate.weight`, `router`) MUST stay FP16 — critical for correct expert selection.
+- **Vision encoder** skip: `'vision_tower' in name or 'multi_modal_projector' in name`
+
+**Multimodal MoE loading (Gemma 4):**
+- Use `AutoModelForMultimodalLM` (NOT AutoModelForCausalLM)
+- Use `AutoProcessor` (NOT AutoTokenizer)
+- `apply_chat_template` returns BatchEncoding — extract `.input_ids`
+- Vision test: `{'type': 'image', 'url': '...'}, {'type': 'text', 'text': '...'}`
+- transformers 5.x needed for Gemma 4 — use `--no-deps` to bypass vLLM `<5` restriction
+
 ## Expected Results (reference)
 
 | Model | Method | tok/s | VRAM | PPL |
@@ -390,6 +420,9 @@ Sliding window: 2048 context, 512 stride, mask first 1536.
 | 9B | PolarQuant Q5 + INT4 | 43 | 7.1 GB | 6.48-6.54 |
 | 9B | torchao INT4 (absmax) | 43.3 | 6.3 GB | 6.68 |
 | 27B | PolarQuant Q5 + INT4 | 22 | 17.7 GB | 5.37 |
+| 31B | PolarQuant Q5 + INT4 (streaming) | 24.9 | 21.5 GB | N/A (instruct) |
+| 31B Vision | PolarQuant Q5 + INT4 (vision BF16) | 24.9 | 21.9 GB | N/A |
+| 26B MoE | Expert offloading (cache=8) | 14.8 | 8.6 GB | N/A |
 
 PolarQuant beats torchao absmax by ~0.14-0.20 PPL with same speed/VRAM.
 
