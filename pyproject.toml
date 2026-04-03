@@ -18,8 +18,12 @@ dependencies = [
 [project.optional-dependencies]
 vllm = ["vllm>=0.8.0"]
 triton = ["triton>=2.0"]
+chat = ["gradio>=4.0", "torchao"]
+serve = ["fastapi", "uvicorn", "torchao"]
+all = ["gradio>=4.0", "torchao", "fastapi", "uvicorn", "huggingface_hub"]
 
 [project.scripts]
+polarquant = "polarengine_vllm.cli:main"
 polarquant-convert = "polarengine_vllm.cli:main"
 polarengine-patch-vllm = "polarengine_vllm.vllm_patcher:main"
 
