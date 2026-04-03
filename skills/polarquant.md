@@ -16,7 +16,10 @@ The user provides a model name or HuggingFace URL. Examples:
 
 3. **Generate the Colab notebook**: Write `.ipynb` to `~/Desktop/POLARQUANT_UNIFIED_{SHORT_NAME}.ipynb`.
 
-## Notebook Structure (9 cells)
+## Notebook Structure (11 cells — COMPLETE PIPELINE)
+
+**CRITICAL**: Every notebook MUST include ALL 11 cells. Never upload a model without benchmarks.
+The template from Qwopus 27B is the gold standard.
 
 ### Cell 0: Markdown header
 ```markdown
@@ -271,101 +274,62 @@ _tao_utils.guard_dtype_size = _patched_guard
 
 **F) Load tokenizer at end of cell.**
 
-### Cell 4: Step 1 — Load + PolarQuant Q5 + torchao INT4
+### Cell 4: Streaming Loader (PQ5+INT4 per-module, saves codes)
+
+**CRITICAL: Use streaming loader, NOT whole-model load.** This is what makes it fit on 24GB GPUs.
 
 **Flow:**
-1. Load model in **BF16** (`dtype=torch.bfloat16`, `attn_implementation='sdpa'`)
-2. PolarQuant Q5 dequant each nn.Linear in-place:
-   ```python
-   # CORRECT dequant (DO NOT use the old buggy view with n_blocks*BS*BS):
-   values = ct[all_codes.long()] / math.sqrt(BS)  # (out_f, n_blocks, BS)
-   for i in range(0, out_f, 64):
-       end = min(i + 64, out_f)
-       v = values[i:end].reshape(-1, BS)
-       values[i:end] = (v @ H_dev).reshape(end - i, n_blocks, BS)
-   values = values * norms.unsqueeze(2)
-   child.weight.data = values.reshape(out_f, -1)[:, :in_f].to(child.weight.dtype)
-   ```
-3. Test generation (quick sanity)
-4. Apply torchao INT4 **without `.half()`** — keep BF16:
-   ```python
-   # Do NOT call model.half()! Qwen3.5 is BF16 native, FP16 causes garbage.
-   quantize_(model, Int4WeightOnlyConfig(group_size=128))
-   _tao_utils.guard_dtype_size = _orig_guard
-   ```
-5. Test generation again
-6. If torchao BF16 fails → fallback to bitsandbytes NF4
+1. Load BF16 on **CPU** (`device_map='cpu'`)
+2. For each nn.Linear (and MoE 3D experts if present):
+   a. Move weight to GPU
+   b. PQ5 quantize+dequant (chunked argmin QC=256, in-place normalize)
+   c. Save codes+norms to `polar_state` dict (CPU)
+   d. INT4 via `nn.Sequential` wrapper (vLLM pattern)
+   e. Delete BF16, keep INT4 on GPU
+3. Move remaining params (norms, embeddings) to GPU
+4. Peak VRAM = accumulated INT4 only (never full BF16 on GPU)
 
-### Cell 5: Step 2 — Generation with PolarQuant KV Cache
+**Variable scoping — CRITICAL:**
+- Import `json, os, time` in every cell that uses them
+- Use `_orig_guard` (unique name), not `_orig` for torchao patch
+- Save `polar_state` DURING quantization, not after (can't extract from INT4)
 
-**Flow:**
-1. Get `num_layers`, `num_kv_heads` from model config
-2. Manual generation loop:
-   ```python
-   @torch.no_grad()
-   def generate_with_cache(model, input_ids, max_new_tokens, cache=None):
-       out = model(input_ids, past_key_values=cache, use_cache=True)
-       cache = out.past_key_values
-       next_tok = out.logits[:, -1:].argmax(-1)
-       tokens = [next_tok]
-       for _ in range(max_new_tokens - 1):
-           out = model(next_tok, past_key_values=cache, use_cache=True)
-           cache = out.past_key_values
-           next_tok = out.logits[:, -1:].argmax(-1)
-           tokens.append(next_tok)
-           if next_tok.item() == tokenizer.eos_token_id: break
-       return torch.cat([input_ids] + tokens, dim=1), cache
-   ```
-3. Use `tokenizer.apply_chat_template()` for chat models
-4. FP16 KV baseline (cache=None) → 300 tokens
-5. PolarQuant Q3 KV (cache=PolarQuantKVCache(...)) → 300 tokens
-6. Token match comparison
+**For multimodal models**: skip vision encoder (`'vision_tower' in name`)
+**For MoE models**: also iterate `named_parameters()` for 3D tensors (experts)
 
-### Cell 6: Step 3 — Speed Benchmark
+### Cell 5: Sanity Test
 
-FP16 KV vs Q4/Q3/Q2 KV: 3 runs × 100 tokens each. Peak VRAM measurement.
+Quick generation: "What is 2+2?" — verify model produces coherent output.
 
-### Cell 7: Step 4 — PPL (WikiText-2)
+### Cell 6: KV Cache Comparison
 
-Sliding window: 2048 context, 512 stride, mask first 1536.
+FP16 KV vs PolarQuant Q3 KV: 300 tokens, report token match %.
+Use `generate_with_cache()` manual loop (NOT model.generate — needs custom cache).
 
-### Cell 8: Step 5 — Results Table
+### Cell 7: Speed Benchmark
 
-**Include:**
-- Weights table (vs FP16, torchao, BnB references)
-- KV Cache table (compression, speed, max context)
-- Combined VRAM budget
-- Consumer GPU projections (pick appropriate GPUs based on model size)
+FP16/Q3/Q2 KV: 3 runs × 100 tokens each. Report average tok/s + peak VRAM.
 
-### Cell 9: Step 6 — Save + Upload to HF
+### Cell 8: Quality Showcase
 
-**Flow:**
-1. `login(token="YOUR_HF_TOKEN")`
-2. Re-quantize on CPU (current model has torchao, can't extract codes)
-3. Save: `{key_prefix}.codes` (int8), `{key_prefix}.norms` (fp16), `{key_prefix}.ct` (fp32, **`.clone()`** — shared memory fix)
-4. Shard safetensors at 5 GB
-5. Save polar_config.json, tokenizer, config
-6. Upload to `caiovicentino1/{Model-Name}-PolarQuant-Q5`
+3 diverse prompts: TCP/UDP (factual), Python code (technical), aurora borealis (science).
+model.generate with max_new_tokens=250.
 
-### Cell 10: Step 7 — Pro Model Card + Charts
+### Cell 9: Results Table
 
-**Charts (dark theme, PolarQuant palette):**
-- PPL comparison bar (#4FC3F7=PolarQuant, #FF8A65=torchao, #AED581=BnB, #CE93D8=FP16)
-- Speed vs VRAM scatter
-- KV Context horizontal bar
+Print all measured values: VRAM, tok/s, peak VRAM, dequant time, layers, polar_state size.
+**NEVER use estimated values — only actual measurements from cells 5-8.**
 
-**Model card sections (emoji headers):**
-🧊 Title, 🎯 Key Results, 📊 Benchmark Comparison, 🚀 Quick Start, 🔬 KV Cache Compression, 🏆 Consumer GPU Support, 🔧 Technical Details, 📖 Citation, 🔗 Resources, 🙏 Acknowledgements
+### Cell 10: Save + Upload
 
-**CRITICAL — Update ALL values for this specific model:**
-- Title with correct model name and size (9B/27B/etc)
-- PPL, tok/s, VRAM from actual benchmark results
-- Architecture (num_layers, KV heads)
-- GPU table appropriate for model size
-- Code example with correct MODEL and REPO strings
-- Dequant time from actual measurement
+**Save model_int4.pt** via `torch.save(model.state_dict(), path)` — smallest download.
+Also save config + tokenizer + polar_config.json.
+Upload to `caiovicentino1/{Model-Name}-PolarQuant-Q5`.
+Model card with REAL benchmark values + charts + GPU table.
+Add to collections.
 
-**Add to collection:** `caiovicentino1/polarquant-models-{slug}`
+**For instruct models**: PPL on WikiText-2 is meaningless (skip). Use quality showcase instead.
+**For base models**: Add Cell 7b with PPL (manual cross-entropy from logits, NOT model.forward(labels=...)).
 
 ## Key Patterns (MUST FOLLOW)
 
