@@ -111,6 +111,48 @@ Examples:
     p_mon.add_argument("--opportunities", action="store_true",
                        help="Suggest high-value models to quantize")
 
+    # ── mlx ───────────────────────────────────────────────────
+    p_mlx = subparsers.add_parser("mlx", help="Convert to MLX 4-bit (Apple Silicon)")
+    p_mlx.add_argument("model", help="HuggingFace model name")
+    p_mlx.add_argument("--output", "-o", help="Output directory")
+    p_mlx.add_argument("--upload", action="store_true")
+
+    # ── llamacpp ──────────────────────────────────────────────
+    p_lc = subparsers.add_parser("llamacpp", help="PolarQuant Q3 KV cache for llama.cpp")
+    p_lc.add_argument("--patch", help="Path to llama.cpp repo to patch")
+    p_lc.add_argument("--run", help="GGUF model path to run with PQ3 KV cache")
+    p_lc.add_argument("--context", "-c", type=int, default=131072)
+    p_lc.add_argument("--llama-cli", default=None, help="Path to llama-cli binary")
+
+    # ── vllm-kv ───────────────────────────────────────────────
+    p_vkv = subparsers.add_parser("vllm-kv", help="PolarQuant KV cache for vLLM")
+    p_vkv.add_argument("--benchmark", help="Run benchmark (preset name)")
+    p_vkv.add_argument("--test", action="store_true", help="Run unit tests")
+    p_vkv.add_argument("--info", action="store_true", help="Show available presets")
+
+    # ── arena ─────────────────────────────────────────────────
+    p_arena = subparsers.add_parser("arena", help="Run public benchmarks (MMLU, HumanEval)")
+    p_arena.add_argument("model", help="HuggingFace model name")
+    p_arena.add_argument("--tasks", nargs="+", default=["mmlu", "gsm8k", "arc_challenge"],
+                         help="Benchmark tasks")
+    p_arena.add_argument("--fewshot", type=int, default=5)
+    p_arena.add_argument("--batch-size", type=int, default=4)
+
+    # ── finetune ──────────────────────────────────────────────
+    p_ft = subparsers.add_parser("finetune", help="QLoRA fine-tune + re-quantize")
+    p_ft.add_argument("model", help="HuggingFace model name")
+    p_ft.add_argument("--dataset", required=True, help="HF dataset name")
+    p_ft.add_argument("--lora-rank", type=int, default=16)
+    p_ft.add_argument("--epochs", type=int, default=1)
+    p_ft.add_argument("--max-samples", type=int, default=10000)
+    p_ft.add_argument("--output", "-o", help="Output directory")
+    p_ft.add_argument("--merge", action="store_true", help="Merge LoRA after training")
+
+    # ── collection ────────────────────────────────────────────
+    p_col = subparsers.add_parser("collection", help="Manage HuggingFace collection")
+    p_col.add_argument("action", choices=["sync", "audit", "stats"],
+                       help="Action: sync, audit, or stats")
+
     args = parser.parse_args()
 
     if args.command is None:
@@ -139,6 +181,24 @@ Examples:
     elif args.command == "monitor":
         from .cmd_monitor import run_monitor
         run_monitor(args)
+    elif args.command == "mlx":
+        from .cmd_mlx import run_mlx
+        run_mlx(args)
+    elif args.command == "llamacpp":
+        from .cmd_llamacpp import run_llamacpp
+        run_llamacpp(args)
+    elif args.command == "vllm-kv":
+        from .cmd_vllm_kv import run_vllm_kv
+        run_vllm_kv(args)
+    elif args.command == "arena":
+        from .cmd_arena import run_arena
+        run_arena(args)
+    elif args.command == "finetune":
+        from .cmd_finetune import run_finetune
+        run_finetune(args)
+    elif args.command == "collection":
+        from .cmd_collection import run_collection
+        run_collection(args)
     else:
         parser.print_help()
 
