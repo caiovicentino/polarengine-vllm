@@ -12,6 +12,8 @@ entry point calls ``register_polar_quant()``, which triggers the import of
 
 __version__ = "0.1.0"
 
+from polarengine_vllm.polar_model import PolarQuantModel  # noqa: F401
+
 
 def register_polar_quant() -> None:
     """Entry point called by vLLM's plugin system.

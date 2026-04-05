@@ -24,6 +24,7 @@ dependencies = [
     "safetensors",
     "scipy",
     "huggingface_hub",
+    "transformers",
 ]
 
 [project.urls]

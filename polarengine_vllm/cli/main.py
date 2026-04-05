@@ -57,6 +57,16 @@ Examples:
     p_chat.add_argument("--temperature", type=float, default=0.7)
     p_chat.add_argument("--top-p", type=float, default=0.9)
 
+    # ── demo ─────────────────────────────────────────────────
+    p_demo = subparsers.add_parser("demo", help="Launch interactive Gradio demo (chat + KV charts + info)")
+    p_demo.add_argument("model", help="HuggingFace model name or path")
+    p_demo.add_argument("--port", type=int, default=7860,
+                        help="Gradio server port (default: 7860)")
+    p_demo.add_argument("--share", action="store_true",
+                        help="Create a public Gradio link")
+    p_demo.add_argument("--kv-nbits", type=int, default=None, choices=[2, 3, 4],
+                        help="KV cache quantization bits for comparison chart")
+
     # ── quantize ──────────────────────────────────────────────
     p_quant = subparsers.add_parser("quantize", help="Quantize a model with PolarQuant Q5+INT4")
     p_quant.add_argument("model", help="HuggingFace model name")
@@ -81,14 +91,28 @@ Examples:
     p_serve.add_argument("--vision", action="store_true")
 
     # ── bench ─────────────────────────────────────────────────
-    p_bench = subparsers.add_parser("bench", help="Benchmark quantization methods")
-    p_bench.add_argument("model", help="HuggingFace model name")
-    p_bench.add_argument("--methods", nargs="+",
-                         default=["fp16", "polarquant", "torchao", "bnb"],
-                         help="Methods to compare")
-    p_bench.add_argument("--tokens", type=int, default=100,
-                         help="Tokens per benchmark run")
-    p_bench.add_argument("--runs", type=int, default=3)
+    p_bench = subparsers.add_parser("bench", help="Benchmark PolarQuant (PPL, lm-eval, comparisons)")
+    p_bench.add_argument("model", help="HuggingFace model name or PolarQuant repo")
+    p_bench.add_argument("--ppl", action="store_true",
+                         help="Compute WikiText-2 perplexity (default if nothing else requested)")
+    p_bench.add_argument("--eval-tasks", type=str, default=None,
+                         help="Comma-separated lm-eval tasks (e.g. mmlu,hellaswag,arc_challenge)")
+    p_bench.add_argument("--compare", type=str, default=None,
+                         help="Comma-separated baselines to compare (fp16, awq, gguf)")
+    p_bench.add_argument("--compare-ppl", type=str, default=None,
+                         help="Pre-computed PPL values (e.g. gguf=8.5,awq=7.2)")
+    p_bench.add_argument("--output", "-o", type=str, default=None,
+                         help="Save results to file (.md or .json)")
+    p_bench.add_argument("--chart", action="store_true",
+                         help="Generate matplotlib comparison chart")
+    p_bench.add_argument("--max-length", type=int, default=2048,
+                         help="Sliding window max length for PPL (default: 2048)")
+    p_bench.add_argument("--stride", type=int, default=512,
+                         help="Sliding window stride for PPL (default: 512)")
+    p_bench.add_argument("--fewshot", type=int, default=5,
+                         help="Few-shot count for lm-eval tasks (default: 5)")
+    p_bench.add_argument("--batch-size", type=int, default=4,
+                         help="Batch size for lm-eval (default: 4)")
 
     # ── info ──────────────────────────────────────────────────
     p_info = subparsers.add_parser("info", help="Show model specs and VRAM estimate")
@@ -163,6 +187,9 @@ Examples:
     if args.command == "chat":
         from .cmd_chat import run_chat
         run_chat(args)
+    elif args.command == "demo":
+        from .cmd_demo import run_demo
+        run_demo(args)
     elif args.command == "quantize":
         from .cmd_quantize import run_quantize
         run_quantize(args)
