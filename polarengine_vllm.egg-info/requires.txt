@@ -1,0 +1,12 @@
+torch>=2.0
+safetensors
+scipy
+
+[cuda]
+triton>=2.0
+
+[triton]
+triton>=2.0
+
+[vllm]
+vllm>=0.8.0

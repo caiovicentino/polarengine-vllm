@@ -2,6 +2,7 @@ torch>=2.0
 safetensors
 scipy
 huggingface_hub
+transformers
 
 [all]
 gradio>=4.0

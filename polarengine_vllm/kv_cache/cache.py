@@ -361,12 +361,14 @@ class PolarKVCache:
     PolarKVAttentionWrapper.
     """
 
-    def __init__(self, config: PolarKVConfig):
+    def __init__(self, config: PolarKVConfig, device: str | None = None):
         self.config = config
+        if device is None:
+            device = "cuda" if torch.cuda.is_available() else "cpu"
         self.quantizer = PolarKVQuantizer(
             head_dim=config.head_dim,
             nbits=config.nbits,
-            device="cuda",
+            device=device,
         )
 
         self.k_layers = []

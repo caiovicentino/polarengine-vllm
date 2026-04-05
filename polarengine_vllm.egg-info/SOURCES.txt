@@ -17,6 +17,12 @@ polarengine_vllm/quantizer.py
 polarengine_vllm/utils.py
 polarengine_vllm/vllm_patcher.py
 polarengine_vllm/weight_converter.py
+polarengine_vllm.egg-info/PKG-INFO
+polarengine_vllm.egg-info/SOURCES.txt
+polarengine_vllm.egg-info/dependency_links.txt
+polarengine_vllm.egg-info/entry_points.txt
+polarengine_vllm.egg-info/requires.txt
+polarengine_vllm.egg-info/top_level.txt
 polarengine_vllm/cli/__init__.py
 polarengine_vllm/cli/cmd_arena.py
 polarengine_vllm/cli/cmd_bench.py
@@ -50,12 +56,8 @@ polarengine_vllm/kv_cache/cache.py
 polarengine_vllm/kv_cache/config.py
 polarengine_vllm/kv_cache/test_polar_kv.py
 polarengine_vllm/kv_cache/triton_kernels.py
-polarquant.egg-info/PKG-INFO
-polarquant.egg-info/SOURCES.txt
-polarquant.egg-info/dependency_links.txt
-polarquant.egg-info/entry_points.txt
-polarquant.egg-info/requires.txt
-polarquant.egg-info/top_level.txt
+tests/__init__.py
+tests/conftest.py
 tests/test_config.py
 tests/test_expert_offload.py
 tests/test_fwht.py
