@@ -102,20 +102,19 @@ if HAS_TRITON:
             x = tl.load(ptrs).to(tl.float32)
 
             for stage in tl.static_range(LOG2_N):
-                h: tl.constexpr = 1 << stage
-                pair_cols = cols ^ h
+                half = 1 << stage
+                pair_cols = cols ^ half
                 pair_ptrs = buf_ptr + row * stride_row + pair_cols
                 x_pair = tl.load(pair_ptrs).to(tl.float32)
-                is_low = (cols & h) == 0
+                is_low = (cols & half) == 0
                 new_x = tl.where(is_low, x + x_pair, x_pair - x)
                 # Store so pair reads in next stage see updated values
                 tl.store(ptrs, new_x)
                 # Reload for next stage (ensures coherence)
                 x = tl.load(ptrs).to(tl.float32)
 
-            # Final normalization
-            inv_sqrt: tl.constexpr = 1.0 / tl.sqrt(float(1 << LOG2_N))
-            x = x * inv_sqrt
+            # Final normalization: 1/sqrt(n)
+            x = x * (1.0 / tl.sqrt(float(1 << LOG2_N)))
             tl.store(ptrs, x)
 
         return _kernel
