@@ -87,7 +87,10 @@ Examples:
     p_serve.add_argument("model", help="HuggingFace model name or path")
     p_serve.add_argument("--port", type=int, default=8000)
     p_serve.add_argument("--host", default="0.0.0.0")
-    p_serve.add_argument("--nbits-kv", type=int, default=3, choices=[2, 3, 4])
+    p_serve.add_argument("--nbits-kv", type=int, default=3, choices=[2, 3, 4],
+                        help="KV cache quantization bits (default: 3 = 5.3x compression)")
+    p_serve.add_argument("--no-kv-cache", action="store_true",
+                        help="Disable PolarQuant KV cache compression")
     p_serve.add_argument("--vision", action="store_true")
 
     # ── bench ─────────────────────────────────────────────────
@@ -118,6 +121,14 @@ Examples:
     p_info = subparsers.add_parser("info", help="Show model specs and VRAM estimate")
     p_info.add_argument("model", help="HuggingFace model name")
     p_info.add_argument("--nbits", type=int, default=5, choices=[3, 4, 5])
+
+    # ── export-ct ─────────────────────────────────────────────
+    p_ct = subparsers.add_parser("export-ct", help="Export PQ5 → CompressedTensors INT4 (native vLLM)")
+    p_ct.add_argument("model", help="PolarQuant HF repo with PQ5 codes")
+    p_ct.add_argument("--output", "-o", default=None, help="Output directory")
+    p_ct.add_argument("--upload", default=None, help="Upload to this HF repo")
+    p_ct.add_argument("--num-bits", type=int, default=4, choices=[4, 8])
+    p_ct.add_argument("--group-size", type=int, default=128)
 
     # ── gguf ──────────────────────────────────────────────────
     p_gguf = subparsers.add_parser("gguf", help="Convert to GGUF for ollama")
@@ -202,6 +213,15 @@ Examples:
     elif args.command == "info":
         from .cmd_info import run_info
         run_info(args)
+    elif args.command == "export-ct":
+        from polarengine_vllm.compressed_tensors_export import convert_pq5_to_compressed_tensors
+        import logging; logging.basicConfig(level=logging.INFO)
+        output = args.output or f"/tmp/ct_{args.model.split('/')[-1]}"
+        convert_pq5_to_compressed_tensors(
+            args.model, output,
+            num_bits=args.num_bits, group_size=args.group_size,
+            upload_repo=args.upload,
+        )
     elif args.command == "gguf":
         from .cmd_gguf import run_gguf
         run_gguf(args)

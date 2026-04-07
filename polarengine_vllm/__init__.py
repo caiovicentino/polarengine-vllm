@@ -10,9 +10,15 @@ entry point calls ``register_polar_quant()``, which triggers the import of
 ``PolarQuantConfig`` and its ``@register_quantization_config`` decorator.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.6.0"
 
 from polarengine_vllm.polar_model import PolarQuantModel  # noqa: F401
+
+# Auto-register PolarQuant with HuggingFace transformers
+try:
+    from polarengine_vllm.hf_integration import PolarQuantConfig  # noqa: F401
+except ImportError:
+    pass  # transformers not installed
 
 
 def register_polar_quant() -> None:
@@ -51,7 +57,7 @@ def _patch_weight_loading():
                 except:
                     pass
 
-            if quant == 'polarengine':
+            if quant in ('polarengine', 'polar'):
                 import logging
                 logger = logging.getLogger("polarengine_vllm")
                 logger.info("PolarEngine: patching weight iterator for on-the-fly dequant")
