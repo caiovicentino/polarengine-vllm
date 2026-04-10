@@ -1,8 +1,15 @@
+> [!IMPORTANT]
+> **Naming notice (2026-04-10).** The "PolarQuant" technique referenced throughout this README is being rebranded to **HLWQ (Hadamard-Lloyd Weight Quantization)**. The change is only the name; the algorithm and the code in this repository are unchanged.
+>
+> The rebrand resolves a name collision with an unrelated, earlier KV cache quantization method also named PolarQuant ([Han et al., arXiv:2502.02617, 2025](https://arxiv.org/abs/2502.02617)). HLWQ addresses **weight** quantization with a **deterministic Walsh-Hadamard rotation** and Lloyd-Max scalar codebook; Han et al.'s PolarQuant addresses **KV cache** quantization with a **random polar transformation**. The two methods are technically distinct.
+>
+> The PyPI package `polarquant` will be superseded by [`hlwq`](https://pypi.org/project/hlwq/); the `polarquant` package and this repository's name will continue to work during the transition period. Reference paper: [arXiv:2603.29078](https://arxiv.org/abs/2603.29078) (v2 in preparation under the new name).
+
 # PolarEngine for vLLM
 
 Custom quantization plugin for vLLM using PolarQuant -- optimal Gaussian quantization via Walsh-Hadamard rotation + Lloyd-Max centroids.
 
-**arXiv preprint**: [arXiv:2603.7424577](https://arxiv.org/abs/2603.7424577)
+**arXiv preprint**: [arXiv:2603.29078](https://arxiv.org/abs/2603.29078)
 
 > **Recommended path**: For best quality-per-VRAM, use **PolarQuant Q5 + torchao INT4** (43.1 tok/s, 6.5 GB VRAM, PPL 6.56). PolarEngine's custom Triton kernel is available for environments where torchao is not an option.
 
@@ -158,7 +165,7 @@ See the [main EOQ repository](https://github.com/caiovicentino/eoq-quantization)
     title={PolarQuant: Near-Lossless LLM Quantization via Walsh-Hadamard Rotation
            and Entropy-Optimal Coding},
     author={Vicentino, Caio},
-    journal={arXiv preprint arXiv:2603.7424577},
+    journal={arXiv preprint arXiv:2603.29078},
     year={2026}
 }
 ```
