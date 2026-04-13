@@ -135,9 +135,16 @@ def _build_config_class(decorator):
             block_size = config.get("block_size", 128)
             fmt = config.get("format", "polar_engine_v4")
 
-            if fmt not in ("polar_engine_v4", "polar_engine_v5"):
+            # Recognised formats (historical + HLWQ rebrand variants):
+            #   polar_engine_v4, polar_engine_v5 — legacy split codes/ct/norms layout
+            #   hlwq-q5, hlwq-q4, hlwq-q3         — bit-packed HLWQ (new Gemopus/MiniMax layout)
+            _known = {
+                "polar_engine_v4", "polar_engine_v5",
+                "hlwq-q5", "hlwq-q4", "hlwq-q3",
+            }
+            if fmt not in _known:
                 logger.warning(
-                    "Unrecognised PolarEngine format '%s'. "
+                    "Unrecognised PolarEngine/HLWQ format '%s'. "
                     "Proceeding, but weight loading may fail.",
                     fmt,
                 )
@@ -171,9 +178,21 @@ def _build_config_class(decorator):
             from polarengine_vllm.linear_method import PolarQuantLinearMethod
             from vllm.model_executor.layers.linear import UnquantizedLinearMethod
             from vllm.model_executor.layers.fused_moe.layer import FusedMoEMethodBase
+            from vllm.model_executor.layers.vocab_parallel_embedding import (
+                VocabParallelEmbedding,
+                UnquantizedEmbeddingMethod,
+            )
+
+            class_name = type(layer).__name__
+
+            # vLLM 0.17+ requires embedding layers to use UnquantizedEmbeddingMethod
+            # (UnquantizedLinearMethod lacks the `embedding` method and fails the
+            # hasattr check in VocabParallelEmbedding.__init__). Return the right
+            # method so embed_tokens / lm_head (when tied) load correctly.
+            if isinstance(layer, VocabParallelEmbedding) or "Embedding" in class_name:
+                return UnquantizedEmbeddingMethod()
 
             # Check if this is a FusedMoE layer — needs FusedMoEMethodBase
-            class_name = type(layer).__name__
             is_moe = "MoE" in class_name or "Moe" in class_name or "moe" in class_name or hasattr(layer, 'num_experts')
             if is_moe:
                 from polarengine_vllm.moe_method import PolarPassthroughMoEMethod
