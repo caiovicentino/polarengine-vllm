@@ -209,6 +209,87 @@ def unpack_codes_q5(packed: torch.Tensor, block_size: int = 128) -> torch.Tensor
     return codes
 
 
+# ─────────────────────────────────────────────────────────────────────────
+# HLWQ bit-packed format (used by Gemopus / MiniMax HLWQ-Q5 skill output)
+# ─────────────────────────────────────────────────────────────────────────
+#
+# Different bit layout than pack_codes_q5. 8 codes (5 bits each, 40 bits)
+# pack into 5 bytes with MSB-first placement:
+#
+#   b0 = (c0 << 3) | (c1 >> 2)                  # c0[4:0] + c1[4:2]
+#   b1 = ((c1 & 3) << 6) | (c2 << 1) | (c3 >> 4) # c1[1:0] + c2[4:0] + c3[4]
+#   b2 = ((c3 & 15) << 4) | (c4 >> 1)           # c3[3:0] + c4[4:1]
+#   b3 = ((c4 & 1) << 7) | (c5 << 2) | (c6 >> 3) # c4[0] + c5[4:0] + c6[4:2]
+#   b4 = ((c6 & 7) << 5) | c7                   # c6[2:0] + c7[4:0]
+#
+# This matches the `bitpack_5` function used in the /polarquant skill
+# notebooks for Gemopus-4-26B-A4B-it-HLWQ-Q5 and MiniMax-M2.7-HLWQ-Q5.
+
+
+def unpack_codes_q5_hlwq(packed: torch.Tensor, total: int | None = None) -> torch.Tensor:
+    """Unpack HLWQ-bit-packed Q5 codes (bitpack_5 layout) to int8.
+
+    This is the inverse of the ``bitpack_5`` helper in the /polarquant
+    skill notebooks (see Gemopus/MiniMax Etapa 1). Distinct from
+    ``unpack_codes_q5`` which decodes a different bit layout.
+
+    Args:
+        packed: uint8 tensor of arbitrary shape; last dim must be
+                divisible by 5 (5 bytes per 8-code group).
+        total:  optional exact code count to return. If None, returns
+                (K // 5) * 8 codes including any padding.
+
+    Returns:
+        codes: int8 tensor with values 0-31. Flat on the last dim.
+    """
+    *leading, K_packed = packed.shape
+    assert K_packed % 5 == 0, (
+        f"HLWQ bit-packed codes require K_packed % 5 == 0, got {K_packed}"
+    )
+    p = packed.to(torch.long).reshape(*leading, K_packed // 5, 5)
+
+    b0 = p[..., 0]
+    b1 = p[..., 1]
+    b2 = p[..., 2]
+    b3 = p[..., 3]
+    b4 = p[..., 4]
+
+    c0 = (b0 >> 3) & 0x1F
+    c1 = ((b0 & 7) << 2) | ((b1 >> 6) & 3)
+    c2 = (b1 >> 1) & 0x1F
+    c3 = ((b1 & 1) << 4) | ((b2 >> 4) & 0xF)
+    c4 = ((b2 & 0xF) << 1) | ((b3 >> 7) & 1)
+    c5 = (b3 >> 2) & 0x1F
+    c6 = ((b3 & 3) << 3) | ((b4 >> 5) & 7)
+    c7 = b4 & 0x1F
+
+    codes = torch.stack([c0, c1, c2, c3, c4, c5, c6, c7], dim=-1).to(torch.int8)
+    # Flatten the last two dims (K_packed//5, 8) → K_packed*8//5
+    codes = codes.reshape(*codes.shape[:-2], -1)
+    if total is not None:
+        codes = codes[..., :total]
+    return codes
+
+
+def pack_codes_q5_hlwq(codes: torch.Tensor) -> torch.Tensor:
+    """Inverse of unpack_codes_q5_hlwq. Not used by the loader, but kept
+    here for round-trip testing against the /polarquant skill output."""
+    *leading, K = codes.shape
+    pad = (8 - K % 8) % 8
+    if pad:
+        codes = torch.cat([codes, torch.zeros(*leading, pad, dtype=codes.dtype)], dim=-1)
+        K = K + pad
+    c = codes.to(torch.long).reshape(*leading, K // 8, 8)
+    c0, c1, c2, c3, c4, c5, c6, c7 = [c[..., i] for i in range(8)]
+    b0 = ((c0 << 3) | (c1 >> 2)) & 0xFF
+    b1 = (((c1 & 3) << 6) | (c2 << 1) | (c3 >> 4)) & 0xFF
+    b2 = (((c3 & 0xF) << 4) | (c4 >> 1)) & 0xFF
+    b3 = (((c4 & 1) << 7) | (c5 << 2) | (c6 >> 3)) & 0xFF
+    b4 = (((c6 & 7) << 5) | c7) & 0xFF
+    packed = torch.stack([b0, b1, b2, b3, b4], dim=-1).to(torch.uint8)
+    return packed.reshape(*leading, -1)
+
+
 def pack_model_codes(model: Any, block_size: int = 128) -> dict:
     """Pack all Q3/Q4 layer codes in a model in-place.
 
