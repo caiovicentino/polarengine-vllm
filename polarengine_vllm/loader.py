@@ -322,36 +322,99 @@ class PolarWeightLoader:
         """
         result: Dict[str, torch.Tensor] = {}
 
+        # Detect which on-disk format we're dealing with.
+        # - polar_engine_v4/v5 : keys `.codes / .norms / .ct_scaled` (split tensors)
+        # - hlwq-q5            : keys `.weight__packed / .weight__norms / .weight__meta`
+        #                        (bit-packed 5-bit per value, from /polarquant skill)
+        fmt = str(self.polar_config.get("format", "polar_engine_v4")).lower()
+        is_hlwq_bitpacked = fmt in ("hlwq-q5", "hlwq-q4", "hlwq-q3")
+
         if self.is_quantized_layer(layer_name):
-            # Load mandatory PolarQuant components.
-            for suffix in (".codes", ".norms"):
-                key = layer_name + suffix
-                component_name = suffix.lstrip(".")
-                result[component_name] = self.load_tensor(key)
+            if is_hlwq_bitpacked:
+                # HLWQ bit-packed format (Gemopus / MiniMax skill output).
+                # On-disk keys: <layer>.weight__packed, .weight__norms, .weight__meta
+                from polarengine_vllm.packing import unpack_codes_q5_hlwq
+                import math as _m
 
-            # Load centroids: try ct_scaled first, fallback to ct (auto-scale)
-            ct_scaled_key = layer_name + ".ct_scaled"
-            ct_key = layer_name + ".ct"
-            if ct_scaled_key in self.weight_map:
-                result["ct_scaled"] = self.load_tensor(ct_scaled_key)
-            elif ct_key in self.weight_map:
-                import math
-                block_size = self.polar_config.get("block_size", 128)
-                ct_raw = self.load_tensor(ct_key)
-                result["ct_scaled"] = ct_raw / math.sqrt(block_size)
+                packed_key = layer_name + ".weight__packed"
+                norms_key  = layer_name + ".weight__norms"
+                meta_key   = layer_name + ".weight__meta"
+
+                if packed_key not in self.weight_map:
+                    raise KeyError(
+                        f"HLWQ bit-packed layer '{layer_name}' missing "
+                        f"'{packed_key}'. Available suffixes: "
+                        f"{[k for k in self.weight_map if k.startswith(layer_name)][:5]}"
+                    )
+
+                packed = self.load_tensor(packed_key)
+                norms  = self.load_tensor(norms_key)
+                meta   = self.load_tensor(meta_key)
+
+                # meta = [out_f, n_blocks, BS, total_codes, in_f]
+                out_f = int(meta[0])
+                n_blocks = int(meta[1])
+                bs = int(meta[2])
+                total_codes = int(meta[3])
+                in_f = int(meta[4]) if len(meta) >= 5 else n_blocks * bs
+
+                # Unpack 5-bit codes → int8 (0-31), reshape to (out_f, n_blocks*bs)
+                flat_codes = unpack_codes_q5_hlwq(packed, total=total_codes)
+                codes = flat_codes.reshape(out_f, n_blocks * bs).to(torch.int8)
+
+                result["codes"] = codes
+                result["norms"] = norms.to(torch.float16)
+
+                # HLWQ centroids are Lloyd-Max for N(0,1), scaled by 1/sqrt(BS).
+                # Build them from the canonical get_centroids table so the repo
+                # doesn't have to ship a per-layer ct tensor.
+                from polarengine_vllm.config import PolarQuantConfig  # noqa: F401
+                try:
+                    from polarengine_vllm.utils import get_centroids as _get_centroids
+                except Exception:
+                    _get_centroids = None
+                if _get_centroids is not None:
+                    ct = _get_centroids(5)
+                else:
+                    # Inline fallback: Lloyd-Max for N(0,1), 32 levels.
+                    import numpy as _np
+                    from scipy.stats import norm as _scipy_norm
+                    q = _np.linspace(0.5/32, 1 - 0.5/32, 32)
+                    ct = torch.tensor(_scipy_norm.ppf(q), dtype=torch.float32)
+                result["ct_scaled"] = (ct / _m.sqrt(bs)).to(torch.float32)
+
+                # Stash in_f on the result for upstream consumers that need
+                # to trim padding (the `codes` tensor here is padded-to-block).
+                result["_hlwq_in_f"] = torch.tensor([in_f], dtype=torch.int64)
             else:
-                raise KeyError(
-                    f"No centroids found for '{layer_name}'. "
-                    f"Tried '{ct_scaled_key}' and '{ct_key}'."
-                )
+                # Legacy polar_engine_v4/v5 format: split codes/norms/ct tensors.
+                for suffix in (".codes", ".norms"):
+                    key = layer_name + suffix
+                    component_name = suffix.lstrip(".")
+                    result[component_name] = self.load_tensor(key)
 
-            # Detect Q5-packed codes and unpack at load time.
-            # After unpacking, kernels receive standard int8 codes (values 0-31).
-            layers_meta = self.polar_config.get("layers", {})
-            layer_meta = layers_meta.get(layer_name, {})
-            if layer_meta.get("packed_q5", False):
-                block_size = layer_meta.get("block_size", self.polar_config.get("block_size", 128))
-                result["codes"] = unpack_codes_q5(result["codes"], block_size)
+                # Load centroids: try ct_scaled first, fallback to ct (auto-scale)
+                ct_scaled_key = layer_name + ".ct_scaled"
+                ct_key = layer_name + ".ct"
+                if ct_scaled_key in self.weight_map:
+                    result["ct_scaled"] = self.load_tensor(ct_scaled_key)
+                elif ct_key in self.weight_map:
+                    import math
+                    block_size = self.polar_config.get("block_size", 128)
+                    ct_raw = self.load_tensor(ct_key)
+                    result["ct_scaled"] = ct_raw / math.sqrt(block_size)
+                else:
+                    raise KeyError(
+                        f"No centroids found for '{layer_name}'. "
+                        f"Tried '{ct_scaled_key}' and '{ct_key}'."
+                    )
+
+                # Detect Q5-packed codes (old pack_codes_q5 layout) and unpack.
+                layers_meta = self.polar_config.get("layers", {})
+                layer_meta = layers_meta.get(layer_name, {})
+                if layer_meta.get("packed_q5", False):
+                    block_size = layer_meta.get("block_size", self.polar_config.get("block_size", 128))
+                    result["codes"] = unpack_codes_q5(result["codes"], block_size)
 
             # Bias is optional.
             bias_key = layer_name + ".bias"
@@ -382,23 +445,28 @@ class PolarWeightLoader:
         return result
 
     def is_quantized_layer(self, layer_name: str) -> bool:
-        """Check if a layer is quantized (present in polar_config layers).
+        """Check if a layer is quantized.
 
-        A layer is considered quantized if it appears in the ``layers``
-        section of ``polar_config.json``, or if a ``.codes`` tensor exists
-        for it in the safetensors weight map.
+        A layer is considered quantized if ANY of:
+          1. It appears in the ``layers`` section of ``polar_config.json``
+          2. A ``.codes`` tensor exists (legacy polar_engine_v4/v5 format)
+          3. A ``.weight__packed`` tensor exists (HLWQ bit-packed format)
 
         Args:
             layer_name: Base layer name (e.g. ``"model.layers.0.self_attn.q_proj"``).
 
         Returns:
-            True if the layer has PolarQuant quantized weights.
+            True if the layer has PolarQuant/HLWQ quantized weights.
         """
         if layer_name in self._quantized_layers:
             return True
-        # Fallback: check if .codes exists in the weight map.
-        codes_key = layer_name + ".codes"
-        return codes_key in self.weight_map
+        # Legacy polar_engine format: look for .codes
+        if (layer_name + ".codes") in self.weight_map:
+            return True
+        # HLWQ bit-packed format: look for .weight__packed
+        if (layer_name + ".weight__packed") in self.weight_map:
+            return True
+        return False
 
     def get_layer_bits(self, layer_name: str) -> int:
         """Get quantization bits for a layer from polar_config.
